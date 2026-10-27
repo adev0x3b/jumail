@@ -149,7 +149,7 @@ cmd_dns() {
     echo "      v=DMARC1; p=quarantine; adkim=s; aspf=r"
     echo
     echo "Plus the records the provider shows when you verify $DOMAIN there"
-    echo "(Resend: MX + TXT on send.$DOMAIN and TXT resend._domainkey.$DOMAIN)."
+    echo "(Resend: CNAMEs send/rsend and TXT resend._domainkey, added by its Cloudflare authorization)."
 
 }
 

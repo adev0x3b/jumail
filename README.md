@@ -59,8 +59,9 @@ git clone https://github.com/adev0x3b/jumail.git && cd jumail
 ./jumail test you@example.org noreply@example.com myapp
 ```
 
-Add the domain at the provider first (Resend asks for three records), then
-publish the records printed by `./jumail dns`.
+Add the domain at the provider first (Resend adds its three records to
+Cloudflare itself with a one-time authorization), then publish the records
+printed by `./jumail dns`.
 
 ## Configuration
 
@@ -98,8 +99,7 @@ defaults:
 
 | name | type | value | from |
 |---|---|---|---|
-| `send.juume.site` | MX | `feedback-smtp.<region>.amazonses.com`, priority 10 | Resend |
-| `send.juume.site` | TXT | `v=spf1 include:amazonses.com ~all` | Resend |
+| `send.juume.site`, `rsend.juume.site` | CNAME | Resend's return-path hosts (carry its SPF and MX) | Resend |
 | `resend._domainkey.juume.site` | TXT | `p=...` | Resend |
 | `jumail._domainkey.juume.site` | TXT | `v=DKIM1; k=rsa; p=...` | `./jumail dkim` |
 | `_dmarc.juume.site` | TXT | `v=DMARC1; p=quarantine; adkim=s; aspf=r` | `./jumail dns` |
