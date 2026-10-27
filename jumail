@@ -14,7 +14,7 @@ envget() { # envget KEY DEFAULT
 DOMAIN=$(envget JUMAIL_DOMAIN juume.site)
 HOSTNAME_=$(envget JUMAIL_HOSTNAME "mail.$DOMAIN")
 SELECTOR=$(envget JUMAIL_DKIM_SELECTOR jumail)
-SPF_INCLUDE=$(envget RELAY_SPF_INCLUDE spf.brevo.com)
+SPF_INCLUDE=$(envget RELAY_SPF_INCLUDE "")
 SENDERS=config/senders
 
 usage() {
@@ -126,27 +126,31 @@ cmd_user() {
 }
 
 cmd_dkim() {
-    docker compose exec -T jumail cat "/data/dkim_keys/${DOMAIN}_${SELECTOR}.dns"
-    echo
+    docker compose exec -T jumail cat "/data/dkim_keys/${DOMAIN}_${SELECTOR}.dns" && echo
 }
 
 cmd_dns() {
     local dkim
     dkim=$(cmd_dkim 2>/dev/null || echo "<start the relay once, then rerun>")
-    cat <<DNS
-Publish these TXT records in the DNS zone of $DOMAIN (Cloudflare: DNS only, no proxy).
-If an SPF record already exists, merge the include into it: a domain must have exactly one.
+    echo "Publish these TXT records in the DNS zone of $DOMAIN (Cloudflare: DNS only, no proxy)."
+    echo
+    if [[ -n $SPF_INCLUDE ]]; then
+        echo "  $DOMAIN"
+        echo "      v=spf1 include:$SPF_INCLUDE -all"
+        echo "      (if an SPF record already exists, merge the include into it: only one SPF per name)"
+    else
+        echo "  $DOMAIN"
+        echo "      no SPF change needed: the provider uses its own return-path subdomain"
+        echo "      (set RELAY_SPF_INCLUDE in .env if yours wants an include on the root domain)"
+    fi
+    echo "  ${SELECTOR}._domainkey.$DOMAIN"
+    echo "      $dkim"
+    echo "  _dmarc.$DOMAIN"
+    echo "      v=DMARC1; p=quarantine; adkim=s; aspf=r"
+    echo
+    echo "Plus the records the provider shows when you verify $DOMAIN there"
+    echo "(Resend: MX + TXT on send.$DOMAIN and TXT resend._domainkey.$DOMAIN)."
 
-  name                           value
-  ----------------------------   -------------------------------------------------------
-  $DOMAIN   v=spf1 include:$SPF_INCLUDE -all
-  ${SELECTOR}._domainkey.$DOMAIN
-      $dkim
-  _dmarc.$DOMAIN   v=DMARC1; p=quarantine; adkim=s; aspf=s
-
-Plus whatever the upstream provider asks for when you verify the domain there
-(Brevo: a brevo-code TXT and its own DKIM records).
-DNS
 }
 
 cmd_queue() {

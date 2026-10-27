@@ -3,7 +3,7 @@
 Send-only SMTP relay for the apps under one domain. Each app gets its own
 login on port 587; the relay authenticates it, enforces which From addresses
 it may use, DKIM-signs the message, queues it and forwards it to a
-transactional provider (Brevo by default) over authenticated STARTTLS.
+transactional provider (Resend by default) over authenticated STARTTLS.
 
 Built on [maddy](https://maddy.email) 0.9, configured as a submission-only
 server: no port 25, no IMAP, no mailboxes.
@@ -43,23 +43,24 @@ queue on your own host and uses a provider only for the final hop.
 
 - Docker Engine with Compose v2.
 - A domain whose DNS you control (Cloudflare for the ACME option).
-- A provider account with SMTP relay access. Brevo's free plan works
-  (300 mails/day, no card).
+- A provider account with SMTP relay access. Resend's free plan works
+  (100 mails/day, 3000/month, no card); Brevo, Mailjet, SMTP2GO and others
+  are a change of four `.env` values.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/adev0x3b/jumail.git && cd jumail
 ./jumail init                 # creates .env from .env.example
-# edit .env: RELAY_USER, RELAY_PASSWORD, ACME_EMAIL, CLOUDFLARE_API_TOKEN
+# edit .env: RELAY_PASSWORD (Resend API key), ACME_EMAIL, CLOUDFLARE_API_TOKEN
 ./jumail up                   # starts the relay and obtains the certificate
 ./jumail dns                  # DNS records to publish
 ./jumail user add myapp myapp@example.com noreply@example.com
 ./jumail test you@example.org noreply@example.com myapp
 ```
 
-Verify the domain at the provider first (Brevo asks for its own TXT records),
-then publish the records printed by `./jumail dns`.
+Add the domain at the provider first (Resend asks for three records), then
+publish the records printed by `./jumail dns`.
 
 ## Configuration
 
@@ -72,10 +73,10 @@ All settings are in `.env` (never committed; see `.env.example`).
 | `JUMAIL_DKIM_SELECTOR` | `jumail` | DKIM selector |
 | `JUMAIL_TLS` | `acme` | `acme` (Let's Encrypt via Cloudflare DNS-01) or `selfsigned` (files from `./jumail certs`) |
 | `ACME_EMAIL`, `CLOUDFLARE_API_TOKEN` | | ACME contact; token scoped to *Zone › DNS › Edit* on the one zone |
-| `RELAY_HOST`, `RELAY_PORT` | `smtp-relay.brevo.com`, `587` | upstream provider |
-| `RELAY_USER`, `RELAY_PASSWORD` | | provider SMTP credentials |
-| `RELAY_SPF_INCLUDE` | `spf.brevo.com` | provider's SPF include, used by `./jumail dns` |
-| `JUMAIL_RATE_BURST`, `JUMAIL_RATE_PERIOD` | `30`, `1m` | global sending budget |
+| `RELAY_HOST`, `RELAY_PORT` | `smtp.resend.com`, `587` | upstream provider |
+| `RELAY_USER`, `RELAY_PASSWORD` | `resend`, | provider SMTP credentials (Resend: the API key) |
+| `RELAY_SPF_INCLUDE` | empty | provider's SPF include for the root domain, if it needs one (Brevo: `spf.brevo.com`) |
+| `JUMAIL_RATE_BURST`, `JUMAIL_RATE_PERIOD` | `20`, `1h` | global sending budget |
 | `JUMAIL_LOOPBACK_PORT` | `587` | port published on `127.0.0.1` for clients outside docker |
 
 The policy itself is `config/maddy.conf`. `config/site-acme.conf` and
@@ -92,16 +93,21 @@ are selected by `JUMAIL_TLS`.
 
 ## DNS records
 
-`./jumail dns` prints them with the actual values. For the defaults:
+`./jumail dns` prints them with the actual values. With Resend and the
+defaults:
 
-| name | type | value |
-|---|---|---|
-| `juume.site` | TXT | `v=spf1 include:spf.brevo.com -all` (merge if an SPF record exists; a domain may have only one) |
-| `jumail._domainkey.juume.site` | TXT | `v=DKIM1; k=rsa; p=...` (from `./jumail dkim`) |
-| `_dmarc.juume.site` | TXT | `v=DMARC1; p=quarantine; adkim=s; aspf=s` |
+| name | type | value | from |
+|---|---|---|---|
+| `send.juume.site` | MX | `feedback-smtp.<region>.amazonses.com`, priority 10 | Resend |
+| `send.juume.site` | TXT | `v=spf1 include:amazonses.com ~all` | Resend |
+| `resend._domainkey.juume.site` | TXT | `p=...` | Resend |
+| `jumail._domainkey.juume.site` | TXT | `v=DKIM1; k=rsa; p=...` | `./jumail dkim` |
+| `_dmarc.juume.site` | TXT | `v=DMARC1; p=quarantine; adkim=s; aspf=r` | `./jumail dns` |
 
-Plus the records the provider asks for when verifying the domain. In
-Cloudflare, TXT records are DNS-only.
+All DNS-only in Cloudflare. Resend puts the return path on `send.juume.site`,
+so the root domain needs no SPF change; a provider that sends with the root
+domain as return path (Brevo) needs `v=spf1 include:<its include> -all` there,
+set `RELAY_SPF_INCLUDE` and `./jumail dns` prints it.
 
 ## Connecting an app
 
