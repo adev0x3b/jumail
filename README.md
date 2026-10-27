@@ -73,7 +73,7 @@ All settings are in `.env` (never committed; see `.env.example`).
 | `JUMAIL_DOMAIN` | `juume.site` | the only sender domain accepted |
 | `JUMAIL_DKIM_SELECTOR` | `jumail` | DKIM selector |
 | `JUMAIL_TLS` | `acme` | `acme` (Let's Encrypt via Cloudflare DNS-01) or `selfsigned` (files from `./jumail certs`) |
-| `ACME_EMAIL`, `CLOUDFLARE_API_TOKEN` | | ACME contact; token scoped to *Zone › DNS › Edit* on the one zone |
+| `ACME_EMAIL`, `CLOUDFLARE_API_TOKEN` | | ACME contact; token with *Zone › DNS › Edit* and *Zone › Zone › Read*, limited to the one zone |
 | `RELAY_HOST`, `RELAY_PORT` | `smtp.resend.com`, `587` | upstream provider |
 | `RELAY_USER`, `RELAY_PASSWORD` | `resend`, | provider SMTP credentials (Resend: the API key) |
 | `RELAY_SPF_INCLUDE` | empty | provider's SPF include for the root domain, if it needs one (Brevo: `spf.brevo.com`) |
