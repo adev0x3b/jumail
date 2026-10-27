@@ -1,92 +1,122 @@
 # JuMail
 
-Send-only SMTP relay for every app under **juume.site** (JuLinks, JuPDF, JuDesk,
-Household, NovaCrm). Apps get one SMTP endpoint and one login each; JuMail
-authenticates them, DKIM-signs the message, queues it and hands it to a
-transactional provider (Brevo's free tier by default) that delivers it from
-reputable IPs.
+Send-only SMTP relay for the apps under one domain. Each app gets its own
+login on port 587; the relay authenticates it, enforces which From addresses
+it may use, DKIM-signs the message, queues it and forwards it to a
+transactional provider (Brevo by default) over authenticated STARTTLS.
 
-It exists because a home connection cannot deliver mail directly: ISPs block
-port 25 outbound and residential IPs sit on the Spamhaus PBL, so Gmail and
-Outlook reject them outright. The relay keeps the parts worth owning (identity,
-credentials, signing, policy, queue) at home and rents only the last hop.
+Built on [maddy](https://maddy.email) 0.9, configured as a submission-only
+server: no port 25, no IMAP, no mailboxes.
+
+## Why a relay
+
+A home connection cannot deliver mail directly. ISPs block outbound port 25
+and residential IP ranges are listed on the Spamhaus PBL, so Gmail and Outlook
+reject them. The relay keeps identity, credentials, signing, policy and the
+queue on your own host and uses a provider only for the final hop.
 
 ```
- JuLinks ─┐                                      ┌────────────────────┐
- JuPDF  ──┤  587 STARTTLS, per-app login        │ JuMail (maddy)     │  587 STARTTLS + AUTH   ┌───────┐      ┌───────┐
- JuDesk ──┼──────────────────────────────────▶   │ auth · allow-list  │ ──────────────────────▶│ Brevo │ ───▶ │ inbox │
- Rails  ──┘  docker network "jumail"            │ DKIM · rate · queue│                        └───────┘      └───────┘
-                                                 └────────────────────┘
-                                                 no port 25, no IMAP, nothing reachable from the internet
+ app A ─┐                                     ┌─────────────────────┐
+ app B ─┤ 587 STARTTLS, one login per app     │ JuMail (maddy)      │ 587 STARTTLS + AUTH  ┌──────────┐
+ app C ─┼───────────────────────────────────▶ │ auth · From policy  │ ───────────────────▶ │ provider │ ──▶ recipient
+ app D ─┘ docker network "jumail"             │ DKIM · rate · queue │                      └──────────┘
+                                              └─────────────────────┘
 ```
 
-Engine: [maddy](https://maddy.email) 0.9, a single Go binary configured by one
-file. No web UI, no database server, no mailboxes.
+## Features
 
-## Security model
+- Submission on 587 only. AUTH is not advertised before STARTTLS; TLS 1.2+.
+- One bcrypt-hashed login per app, stored in an SQLite table in the data volume.
+- Per-login allow-list of From addresses (`config/senders`), checked on both
+  the envelope and the header. Senders outside the domain are rejected.
+- DKIM signing with a 2048-bit RSA key generated on first start.
+- Global rate limit; excess is deferred with 451, not dropped.
+- On-disk queue with exponential retry when the provider is unreachable.
+- TLS certificate from Let's Encrypt (DNS-01 via Cloudflare) or from files.
+- Hardened container: non-root, read-only filesystem, no capabilities,
+  `no-new-privileges`, 10 MB message cap, log rotation.
+- No port published beyond `127.0.0.1`; apps reach it over a docker network.
+- Operator CLI (`./jumail`) for logins, DNS records, queue and test mail.
+- End-to-end smoke test with Mailpit standing in for the provider.
 
-- **Nothing listens on the internet.** The only listener is submission on 587,
-  reachable from the `jumail` docker network and from `127.0.0.1` on the host.
-  There is no port 25, so an open relay is impossible by construction.
-- **Authentication is mandatory and never in clear text.** `insecure_auth no`
-  means AUTH is not even advertised before STARTTLS. TLS 1.2+ only.
-- **One login per app, bcrypt-hashed** in an SQLite table inside the data
-  volume. Rotating or revoking one app never touches the others.
-- **An app can only send as itself.** `config/senders` maps each login to the
-  From addresses it may use; envelope *and* header From are checked, so
-  JuPDF cannot send as `julinks@juume.site`, and nobody can send as the CEO.
-- **Only juume.site senders are accepted**; everything else gets a 501.
-- **Global rate limit** (`JUMAIL_RATE_BURST`/`PERIOD`, default 30 per minute)
-  protects the provider quota and limits blast radius if one app is
-  compromised. Burst beyond it is deferred with 451, not dropped.
-- **DKIM-signed at the relay** with a 2048-bit RSA key that never leaves the
-  volume, selector `jumail`. SPF and DMARC records complete the picture.
-- **Container hardening:** non-root user, read-only root filesystem, all
-  capabilities dropped, `no-new-privileges`, 10 MB message cap, log rotation.
-- **Secrets live in `.env` only** (provider key, Cloudflare token). The repo
-  can be public.
+## Requirements
 
-## Quick start (docker host)
+- Docker Engine with Compose v2.
+- A domain whose DNS you control (Cloudflare for the ACME option).
+- A provider account with SMTP relay access. Brevo's free plan works
+  (300 mails/day, no card).
+
+## Quick start
 
 ```bash
-git clone git@github.com:adev0x3b/jumail.git && cd jumail
-./jumail init                 # creates .env, fill in the blanks
-./jumail up                   # starts the relay (ACME fetches the certificate)
-./jumail dns                  # SPF, DKIM, DMARC records to paste into Cloudflare
-./jumail user add julinks julinks@juume.site noreply@juume.site
-./jumail test you@gmail.com noreply@juume.site julinks
+git clone https://github.com/adev0x3b/jumail.git && cd jumail
+./jumail init                 # creates .env from .env.example
+# edit .env: RELAY_USER, RELAY_PASSWORD, ACME_EMAIL, CLOUDFLARE_API_TOKEN
+./jumail up                   # starts the relay and obtains the certificate
+./jumail dns                  # DNS records to publish
+./jumail user add myapp myapp@example.com noreply@example.com
+./jumail test you@example.org noreply@example.com myapp
 ```
 
-`.env` needs:
+Verify the domain at the provider first (Brevo asks for its own TXT records),
+then publish the records printed by `./jumail dns`.
 
-| key | what |
-|---|---|
-| `RELAY_USER`, `RELAY_PASSWORD` | Brevo login (account email) and an SMTP key from *SMTP & API* |
-| `ACME_EMAIL`, `CLOUDFLARE_API_TOKEN` | Let's Encrypt contact and a token limited to *Zone › DNS › Edit* on juume.site |
+## Configuration
 
-Before the first mail: verify the domain in Brevo (it asks for its own TXT
-records), then publish the three records from `./jumail dns`.
+All settings are in `.env` (never committed; see `.env.example`).
 
-### TLS without a Cloudflare token
+| key | default | meaning |
+|---|---|---|
+| `JUMAIL_HOSTNAME` | `mail.juume.site` | server name; also the docker network alias apps connect to |
+| `JUMAIL_DOMAIN` | `juume.site` | the only sender domain accepted |
+| `JUMAIL_DKIM_SELECTOR` | `jumail` | DKIM selector |
+| `JUMAIL_TLS` | `acme` | `acme` (Let's Encrypt via Cloudflare DNS-01) or `selfsigned` (files from `./jumail certs`) |
+| `ACME_EMAIL`, `CLOUDFLARE_API_TOKEN` | | ACME contact; token scoped to *Zone › DNS › Edit* on the one zone |
+| `RELAY_HOST`, `RELAY_PORT` | `smtp-relay.brevo.com`, `587` | upstream provider |
+| `RELAY_USER`, `RELAY_PASSWORD` | | provider SMTP credentials |
+| `RELAY_SPF_INCLUDE` | `spf.brevo.com` | provider's SPF include, used by `./jumail dns` |
+| `JUMAIL_RATE_BURST`, `JUMAIL_RATE_PERIOD` | `30`, `1m` | global sending budget |
+| `JUMAIL_LOOPBACK_PORT` | `587` | port published on `127.0.0.1` for clients outside docker |
 
-Set `JUMAIL_TLS=selfsigned`, run `./jumail certs` and give `certs/ca.pem` to
-the apps (`NODE_EXTRA_CA_CERTS`, `ca_file`, `SSL_CERT_FILE`, ...). ACME is the
-default because with a real certificate for `mail.juume.site` the apps need
-zero TLS configuration.
+The policy itself is `config/maddy.conf`. `config/site-acme.conf` and
+`config/site-selfsigned.conf` hold the TLS source and the upstream target and
+are selected by `JUMAIL_TLS`.
+
+### TLS modes
+
+- `acme` (default): a real certificate for `JUMAIL_HOSTNAME`, renewed
+  automatically. Apps need no TLS configuration.
+- `selfsigned`: `./jumail certs` creates a local CA and server certificate in
+  `certs/`. Apps must trust `certs/ca.pem` (`NODE_EXTRA_CA_CERTS`, `ca_file`,
+  `SSL_CERT_FILE`, ...).
+
+## DNS records
+
+`./jumail dns` prints them with the actual values. For the defaults:
+
+| name | type | value |
+|---|---|---|
+| `juume.site` | TXT | `v=spf1 include:spf.brevo.com -all` (merge if an SPF record exists; a domain may have only one) |
+| `jumail._domainkey.juume.site` | TXT | `v=DKIM1; k=rsa; p=...` (from `./jumail dkim`) |
+| `_dmarc.juume.site` | TXT | `v=DMARC1; p=quarantine; adkim=s; aspf=s` |
+
+Plus the records the provider asks for when verifying the domain. In
+Cloudflare, TXT records are DNS-only.
 
 ## Connecting an app
 
-Join the external network and point the mailer at `mail.juume.site:587`,
-STARTTLS, PLAIN or LOGIN auth, with the login printed by `./jumail user add`.
+Join the external `jumail` network and use the login printed by
+`./jumail user add`: host `mail.juume.site`, port 587, STARTTLS, PLAIN or
+LOGIN authentication.
 
 ```yaml
-# compose.yml of any app on the same docker host
+# compose.yml of an app on the same docker host
 services:
   web:
     environment:
       SMTP_HOST: mail.juume.site
       SMTP_PORT: 587
-      SMTP_USER: julinks
+      SMTP_USER: myapp
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       MAIL_FROM: noreply@juume.site
     networks: [default, jumail]
@@ -95,10 +125,10 @@ networks:
     external: true
 ```
 
-<details><summary>Client snippets</summary>
+<details><summary>Client examples</summary>
 
 ```js
-// Node / nodemailer
+// Node (nodemailer)
 nodemailer.createTransport({ host: "mail.juume.site", port: 587, secure: false, requireTLS: true,
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } });
 ```
@@ -117,74 +147,80 @@ s.login(user, password); s.send_message(msg)
 ```
 
 ```csharp
-// .NET / MailKit
+// .NET (MailKit)
 await client.ConnectAsync("mail.juume.site", 587, SecureSocketOptions.StartTls);
 await client.AuthenticateAsync(user, password);
 ```
 </details>
 
-Containers started by Kamal (Household) are on the `kamal` network; connect
-them with `docker network connect jumail <container>` from a post-deploy hook,
-or use the host loopback `127.0.0.1:587` with `--add-host`.
+Containers that are not managed by Compose (for example Kamal deployments)
+can be attached with `docker network connect jumail <container>`, or can use
+the loopback port on the host.
 
-## Operating it
+## Operations
 
 | command | |
 |---|---|
-| `./jumail user add NAME [ADDR...]` | new login, prints the password once |
-| `./jumail user passwd NAME` / `rm NAME` / `list` | rotate, revoke, inspect |
+| `./jumail user add NAME [ADDR...]` | create a login; prints the password once |
+| `./jumail user passwd NAME` | new random password |
+| `./jumail user rm NAME` / `user list` | revoke, inspect |
 | `./jumail dns` / `./jumail dkim` | records to publish |
-| `./jumail logs` / `./jumail queue` / `./jumail status` | what is happening |
+| `./jumail logs` / `queue` / `status` | runtime state |
+| `./jumail test TO [FROM] [LOGIN]` | send a test message through the relay |
 | `git pull && ./jumail up` | update |
 
-The queue retries with exponential back-off (18 min, 21, 25 ... up to 12
-tries) if the provider is down. There are no bounce messages, because there is
-no mailbox to deliver them to: failures show up in `./jumail logs`.
+The allow-list file reloads within 15 seconds; logins take effect
+immediately. Rotating the provider key is a change to `.env` followed by
+`./jumail up`. The queue retries 12 times with exponential back-off starting
+at about 18 minutes; failures are logged, no bounce messages are generated
+because there is no mailbox to deliver them to.
 
-Rotating the provider key is one line in `.env` and `./jumail up`; no app
-changes. Swapping providers (Mailjet, Resend, SMTP2GO...) is `RELAY_HOST`,
-`RELAY_USER`, `RELAY_PASSWORD`, `RELAY_SPF_INCLUDE`.
+## Testing
 
-## Verification
-
-`ci/` runs the whole chain with [Mailpit](https://mailpit.axllent.org/)
-playing the provider (STARTTLS + AUTH required) and `ci/smoke.py` asserting
-the policy from the outside:
+`ci/` runs the complete chain with Mailpit as the upstream (STARTTLS and
+authentication required) and `ci/smoke.py` checking the policy from a client's
+point of view:
 
 ```bash
 ./ci/gen-certs.sh
-docker compose -f compose.yml -f ci/compose.ci.yml up -d --wait jumail mailpit
-COMPOSE_FILE=compose.yml:ci/compose.ci.yml ./jumail user add julinks --password julinks-ci-secret --no-senders
-COMPOSE_FILE=compose.yml:ci/compose.ci.yml ./jumail user add jupdf --password jupdf-ci-secret --no-senders
-docker compose -f compose.yml -f ci/compose.ci.yml run --rm smoke
+export COMPOSE_FILE=compose.yml:ci/compose.ci.yml
+docker compose up -d --wait jumail mailpit
+./jumail user add julinks --password julinks-ci-secret --no-senders
+./jumail user add jupdf --password jupdf-ci-secret --no-senders
+docker compose run --rm smoke
+docker compose down -v
 ```
 
-The 12 checks: AUTH hidden before STARTTLS, unauthenticated send refused,
-wrong password, From outside the allow-list, foreign sender domain, spoofed
-header From, happy path accepted, relayed upstream over STARTTLS with AUTH,
-DKIM signature `d=juume.site s=jumail` present, From preserved, one app cannot
-impersonate another, rate limit defers with 451. GitHub Actions runs the same
+Checks: AUTH hidden before STARTTLS, unauthenticated send refused, wrong
+password refused, From outside the allow-list refused, foreign sender domain
+refused, spoofed header From refused, authenticated send accepted, message
+relayed upstream over STARTTLS with AUTH, DKIM signature present with the
+expected domain and selector, From preserved, one login cannot use another's
+address, rate limit defers with 451. The GitHub Actions workflow runs the same
 on every push.
 
-![Relayed message with its DKIM signature, seen by the fake provider](docs/mailpit-headers.png)
+![Relayed message with its DKIM signature, as received by Mailpit](docs/mailpit-headers.png)
 
-## Known limits
+## Limitations
 
 - Rate limits are global, not per login (maddy scopes limits by IP, sender
-  domain or destination, and every app shares the domain).
-- The provider sees message contents. That is the trade for inbox delivery
-  from a home connection; the relay keeps the keys to the identity.
-- Brevo's free plan is 300 mails/day and may add a small footer.
+  domain or destination, and all logins share one domain).
+- The provider sees message contents.
+- No inbound mail, no bounces, no DMARC reports.
 
 ## Layout
 
 ```
-compose.yml              relay service, hardened; network "jumail"; data volume
-config/maddy.conf        the whole policy, 90 lines
-config/site-acme.conf    TLS via Let's Encrypt (Cloudflare DNS-01) + upstream relay
-config/site-selfsigned.conf  same with certificate files
-config/senders           login -> allowed From addresses (managed by ./jumail)
-jumail                   operator CLI
-ci/                      Mailpit stand-in, smoke test, compose override, cert generator
-.github/workflows/ci.yml boots the stack and runs the smoke test
+compose.yml                  relay service, network "jumail", data volume
+config/maddy.conf            listener, authentication, sender policy, DKIM, queue
+config/site-acme.conf        TLS via Let's Encrypt + upstream relay
+config/site-selfsigned.conf  TLS from files + upstream relay
+config/senders               login -> allowed From addresses
+jumail                       operator CLI
+ci/                          Mailpit stand-in, smoke test, compose override, cert generator
+.github/workflows/ci.yml     runs the smoke test
 ```
+
+## License
+
+MIT
