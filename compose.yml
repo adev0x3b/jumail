@@ -31,10 +31,11 @@ services:
       JUMAIL_HOSTNAME: ${JUMAIL_HOSTNAME:-mail.juume.site}
       JUMAIL_DOMAIN: ${JUMAIL_DOMAIN:-juume.site}
       JUMAIL_DKIM_SELECTOR: ${JUMAIL_DKIM_SELECTOR:-jumail}
-      JUMAIL_RATE_BURST: ${JUMAIL_RATE_BURST:-30}
-      JUMAIL_RATE_PERIOD: ${JUMAIL_RATE_PERIOD:-1m}
-      RELAY_HOST: ${RELAY_HOST:-smtp-relay.brevo.com}
+      JUMAIL_RATE_BURST: ${JUMAIL_RATE_BURST:-20}
+      JUMAIL_RATE_PERIOD: ${JUMAIL_RATE_PERIOD:-1h}
+      RELAY_HOST: ${RELAY_HOST:-smtp.resend.com}
       RELAY_PORT: ${RELAY_PORT:-587}
+      RELAY_USER: ${RELAY_USER:-resend}
     volumes:
       - data:/data
       - ./config/maddy.conf:/etc/jumail/maddy.conf:ro
