@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# JuMail operator CLI. Run from the repo root on the docker host.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+MADDY=(docker compose exec -T jumail maddy -config /etc/jumail/maddy.conf)
+
+envget() { # envget KEY DEFAULT
+    local v
+    v=$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    printf '%s' "${v:-$2}"
+}
+
+DOMAIN=$(envget JUMAIL_DOMAIN juume.site)
+HOSTNAME_=$(envget JUMAIL_HOSTNAME "mail.$DOMAIN")
+SELECTOR=$(envget JUMAIL_DKIM_SELECTOR jumail)
+SPF_INCLUDE=$(envget RELAY_SPF_INCLUDE spf.brevo.com)
+SENDERS=config/senders
+
+usage() {
+    cat <<USAGE
+JuMail - send-only SMTP relay for the $DOMAIN apps
+
+  ./jumail init                      create .env from .env.example, prepare folders
+  ./jumail certs                     self-signed CA + server cert (only for JUMAIL_TLS=selfsigned)
+  ./jumail up | down | status | logs
+  ./jumail user add NAME [ADDR...]   create a login; ADDR = From addresses it may use
+                                     (default NAME@$DOMAIN). Prints the password once.
+         options: --password PW, --no-senders (don't touch $SENDERS)
+  ./jumail user passwd NAME          set a new random password
+  ./jumail user rm NAME
+  ./jumail user list
+  ./jumail dkim                      DKIM DNS record generated on first start
+  ./jumail dns                       all DNS records to publish (SPF, DKIM, DMARC)
+  ./jumail queue                     messages waiting for retry
+  ./jumail test TO [FROM] [LOGIN]    send a test mail through the relay
+USAGE
+}
+
+random_password() {
+    openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32
+}
+
+need_env() {
+    [[ -f .env ]] || { echo "no .env yet, run ./jumail init first" >&2; exit 1; }
+}
+
+cmd_init() {
+    if [[ -f .env ]]; then
+        echo ".env already exists, leaving it alone"
+    else
+        cp .env.example .env
+        chmod 600 .env
+        echo "created .env - fill in RELAY_USER, RELAY_PASSWORD, ACME_EMAIL, CLOUDFLARE_API_TOKEN"
+    fi
+    mkdir -p certs
+    echo "next: ./jumail up && ./jumail dns"
+}
+
+cmd_certs() {
+    mkdir -p certs
+    if [[ -f certs/ca.pem ]]; then
+        echo "certs/ca.pem exists; delete the certs/ folder first to regenerate" >&2
+        exit 1
+    fi
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+        -subj "/CN=JuMail CA" -keyout certs/ca.key -out certs/ca.pem >/dev/null 2>&1
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+        -subj "/CN=$HOSTNAME_" -addext "subjectAltName=DNS:$HOSTNAME_,DNS:localhost,IP:127.0.0.1" \
+        -keyout certs/server.key -out certs/server.csr >/dev/null 2>&1
+    openssl x509 -req -in certs/server.csr -CA certs/ca.pem -CAkey certs/ca.key -CAcreateserial \
+        -days 825 -copy_extensions copy -out certs/server.pem >/dev/null 2>&1
+    rm -f certs/server.csr certs/ca.srl
+    chmod 644 certs/ca.pem certs/server.pem certs/server.key
+    chmod 600 certs/ca.key
+    echo "wrote certs/ca.pem (give this to the apps), certs/server.pem, certs/server.key"
+    echo "set JUMAIL_TLS=selfsigned in .env and restart: ./jumail up"
+}
+
+cmd_user() {
+    local sub=${1:-}; shift || true
+    case "$sub" in
+        add)
+            local name="" password="" touch_senders=1; local -a addrs=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --password) password=$2; shift 2 ;;
+                    --no-senders) touch_senders=0; shift ;;
+                    -*) echo "unknown option $1" >&2; exit 1 ;;
+                    *) if [[ -z $name ]]; then name=$1; else addrs+=("$1"); fi; shift ;;
+                esac
+            done
+            [[ -n $name ]] || { usage; exit 1; }
+            [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "login must be lowercase [a-z0-9._-]" >&2; exit 1; }
+            [[ ${#addrs[@]} -gt 0 ]] || addrs=("$name@$DOMAIN")
+            [[ -n $password ]] || password=$(random_password)
+            printf '%s\n' "$password" | "${MADDY[@]}" creds create --bcrypt-cost 12 "$name"
+            if [[ $touch_senders -eq 1 ]]; then
+                sed -i "/^$name:/d" "$SENDERS"
+                printf '%s: %s\n' "$name" "$(IFS=,; echo "${addrs[*]}" | sed 's/,/, /g')" >> "$SENDERS"
+            fi
+            echo
+            echo "login:    $name"
+            echo "password: $password"
+            echo "may send as: ${addrs[*]}"
+            echo "SMTP_HOST=$HOSTNAME_ SMTP_PORT=587 (STARTTLS)"
+            echo "(shown once; the relay only stores a hash. Allow-list reloads within 15 s.)"
+            ;;
+        passwd)
+            local name=${1:?login}; local password; password=$(random_password)
+            printf '%s\n' "$password" | "${MADDY[@]}" creds password "$name"
+            echo "new password for $name: $password"
+            ;;
+        rm)
+            local name=${1:?login}
+            "${MADDY[@]}" creds remove -y "$name"
+            sed -i "/^$name:/d" "$SENDERS"
+            echo "removed $name"
+            ;;
+        list)
+            echo "logins:"; "${MADDY[@]}" creds list
+            echo; echo "allowed senders ($SENDERS):"; grep -v '^#' "$SENDERS" || true
+            ;;
+        *) usage; exit 1 ;;
+    esac
+}
+
+cmd_dkim() {
+    docker compose exec -T jumail cat "/data/dkim_keys/${DOMAIN}_${SELECTOR}.dns"
+    echo
+}
+
+cmd_dns() {
+    local dkim
+    dkim=$(cmd_dkim 2>/dev/null || echo "<start the relay once, then rerun>")
+    cat <<DNS
+Publish these TXT records in the DNS zone of $DOMAIN (Cloudflare: DNS only, no proxy).
+If an SPF record already exists, merge the include into it: a domain must have exactly one.
+
+  name                           value
+  ----------------------------   -------------------------------------------------------
+  $DOMAIN   v=spf1 include:$SPF_INCLUDE -all
+  ${SELECTOR}._domainkey.$DOMAIN
+      $dkim
+  _dmarc.$DOMAIN   v=DMARC1; p=quarantine; adkim=s; aspf=s
+
+Plus whatever the upstream provider asks for when you verify the domain there
+(Brevo: a brevo-code TXT and its own DKIM records).
+DNS
+}
+
+cmd_queue() {
+    docker compose exec -T jumail sh -c 'n=$(ls /data/remote_queue 2>/dev/null | wc -l); echo "$n message(s) queued"; ls -l /data/remote_queue 2>/dev/null | tail -n +2'
+}
+
+cmd_test() {
+    local to=${1:?recipient}; local from=${2:-}; local login=${3:-}
+    [[ -n $login ]] || { read -r -p "login: " login; }
+    [[ -n $from ]] || from="$login@$DOMAIN"
+    local pw; read -r -s -p "password for $login: " pw; echo
+    docker run --rm -i --network jumail -e JH="$HOSTNAME_" -e JU="$login" -e JP="$pw" -e JF="$from" -e JT="$to" \
+        python:3.13-alpine python -I - <<'PY'
+import os, smtplib, ssl, email.message
+m = email.message.EmailMessage()
+m["From"], m["To"], m["Subject"] = os.environ["JF"], os.environ["JT"], "JuMail test"
+m.set_content("If you can read this, the relay works end to end.")
+s = smtplib.SMTP(os.environ["JH"], 587, timeout=30)
+s.starttls(context=ssl.create_default_context())
+s.login(os.environ["JU"], os.environ["JP"])
+s.send_message(m)
+s.quit()
+print("accepted by the relay; watch ./jumail logs for the upstream hand-off")
+PY
+}
+
+case "${1:-}" in
+    init) cmd_init ;;
+    certs) cmd_certs ;;
+    up) need_env; docker compose up -d --wait ;;
+    down) docker compose down ;;
+    status) docker compose ps ;;
+    logs) shift; docker compose logs -f --tail "${1:-100}" jumail ;;
+    user) shift; cmd_user "$@" ;;
+    dkim) cmd_dkim ;;
+    dns) cmd_dns ;;
+    queue) cmd_queue ;;
+    test) shift; cmd_test "$@" ;;
+    *) usage; [[ -z ${1:-} ]] && exit 0 || exit 1 ;;
+esac
