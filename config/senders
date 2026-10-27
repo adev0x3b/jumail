@@ -1,0 +1,2 @@
+# login: allowed From addresses (comma separated). Managed by `./jumail user add`.
+# A bare domain allows every address in that domain.

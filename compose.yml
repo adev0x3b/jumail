@@ -1,0 +1,71 @@
+name: jumail
+
+services:
+  # One-shot: make the data volume writable by the unprivileged maddy user.
+  init:
+    image: alpine:3.22
+    command: ["sh", "-c", "chown 1000:1000 /data && chmod 700 /data"]
+    volumes:
+      - data:/data
+
+  jumail:
+    image: foxcpp/maddy:0.9.6
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/bin/maddy", "-config", "/etc/jumail/maddy.conf"]
+    command: ["run"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      JUMAIL_HOSTNAME: ${JUMAIL_HOSTNAME:-mail.juume.site}
+      JUMAIL_DOMAIN: ${JUMAIL_DOMAIN:-juume.site}
+      JUMAIL_DKIM_SELECTOR: ${JUMAIL_DKIM_SELECTOR:-jumail}
+      JUMAIL_RATE_BURST: ${JUMAIL_RATE_BURST:-30}
+      JUMAIL_RATE_PERIOD: ${JUMAIL_RATE_PERIOD:-1m}
+      RELAY_HOST: ${RELAY_HOST:-smtp-relay.brevo.com}
+      RELAY_PORT: ${RELAY_PORT:-587}
+    volumes:
+      - data:/data
+      - ./config/maddy.conf:/etc/jumail/maddy.conf:ro
+      - ./config/site-${JUMAIL_TLS:-acme}.conf:/etc/jumail/site.conf:ro
+      - ./config/senders:/etc/jumail/senders:ro
+      - ./certs:/etc/jumail/certs:ro
+    networks:
+      jumail:
+        aliases:
+          - ${JUMAIL_HOSTNAME:-mail.juume.site}
+    ports:
+      # Loopback only, for clients running on the host itself. Nothing is
+      # reachable from the LAN or the internet.
+      - "127.0.0.1:${JUMAIL_LOOPBACK_PORT:-587}:587"
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'QUIT\\r\\n' | nc -w 3 127.0.0.1 587 | grep -q '^220 '"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  # Other compose projects join it with `networks: { jumail: { external: true } }`
+  # and talk to mail.juume.site:587.
+  jumail:
+    name: jumail
+
+volumes:
+  data:

@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    # Hosted minutes are used up until November 2026; "zed" is the self-hosted
+    # runner on the desktop. Switch to ubuntu-latest when going public.
+    runs-on: self-hosted
+    timeout-minutes: 15
+    env:
+      COMPOSE_FILE: compose.yml:ci/compose.ci.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate throwaway certificates for the fake upstream
+        run: ./ci/gen-certs.sh
+
+      - name: Start relay + fake upstream
+        run: docker compose up -d --wait jumail mailpit
+
+      - name: Create the CI app logins
+        run: |
+          ./jumail user add julinks --password julinks-ci-secret --no-senders
+          ./jumail user add jupdf --password jupdf-ci-secret --no-senders
+          ./jumail user list
+
+      - name: Smoke test
+        run: docker compose run --rm smoke
+
+      - name: Relay logs
+        if: always()
+        run: docker compose logs jumail mailpit
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

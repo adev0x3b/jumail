@@ -1,0 +1,43 @@
+# Overrides for CI and local verification: Mailpit stands in for Brevo and
+# a python container runs the smoke tests. Never use in production.
+#   docker compose -f compose.yml -f ci/compose.ci.yml up -d --wait
+services:
+  jumail:
+    environment:
+      JUMAIL_RATE_BURST: "20"
+      JUMAIL_RATE_PERIOD: "1m"
+    volumes:
+      - ./ci/site-ci.conf:/etc/jumail/site.conf:ro
+      - ./ci/senders:/etc/jumail/senders:ro
+      - ./ci/certs/ca.pem:/etc/jumail/ci/ca.pem:ro
+    depends_on:
+      mailpit:
+        condition: service_started
+
+  mailpit:
+    image: axllent/mailpit:v1.32.0
+    command:
+      - --smtp-tls-cert=/certs/mailpit.pem
+      - --smtp-tls-key=/certs/mailpit.key
+      - --smtp-require-starttls
+      - --smtp-auth-file=/auth/mailpit-auth
+      - --disable-version-check
+    environment:
+      MP_SMTP_BIND_ADDR: "0.0.0.0:1025"
+      MP_UI_BIND_ADDR: "0.0.0.0:8025"
+    volumes:
+      - ./ci/certs:/certs:ro
+      - ./ci/mailpit-auth:/auth/mailpit-auth:ro
+    networks:
+      - jumail
+
+  smoke:
+    image: python:3.13-alpine
+    profiles: ["smoke"]
+    command: ["python", "-I", "/smoke/smoke.py"]
+    environment:
+      JUMAIL_HOSTNAME: ${JUMAIL_HOSTNAME:-mail.juume.site}
+    volumes:
+      - ./ci/smoke.py:/smoke/smoke.py:ro
+    networks:
+      - jumail
