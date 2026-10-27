@@ -171,7 +171,15 @@ code, msg = try_send(s, "julinks@juume.site")
 check("apps cannot impersonate each other", code == 553, f"{code} {msg}")
 s.quit()
 
-# 9. Global rate limit (CI runs with burst 20 per minute, shared by every
+# 9. Login whose allow-list entry was written by `./jumail user add` while
+# the relay was running (catches the CLI and the relay disagreeing on the file).
+s = connect()
+s.login("judesk", "judesk-ci-secret")
+code, msg = try_send(s, "judesk@juume.site", subject="JuMail allow-list written by the CLI")
+check("allow-list entry added at runtime is honoured", code == 250, f"{code} {msg}")
+s.quit()
+
+# 10. Global rate limit (CI runs with burst 20 per minute, shared by every
 # attempt above, so just send until the relay starts deferring).
 s = connect()
 s.login(*GOOD)
