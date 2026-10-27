@@ -5,6 +5,17 @@ cd "$(dirname "$0")"
 
 MADDY=(docker compose exec -T jumail maddy -config /etc/jumail/maddy.conf)
 
+# Run a maddy management command; show its stderr only if it fails (on success
+# it is just config-loading chatter and a harmless "no terminal" warning).
+maddy_ctl() {
+    local err rc=0
+    err=$(mktemp)
+    "${MADDY[@]}" "$@" 2>"$err" || rc=$?
+    if [[ $rc -ne 0 ]]; then cat "$err" >&2; fi
+    rm -f "$err"
+    return $rc
+}
+
 envget() { # envget KEY DEFAULT
     local v
     v=$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
@@ -51,6 +62,10 @@ wait_reload() {
     printf 'waiting for the relay to reload the allow-list'
     for _ in 1 2 3 4 5 6 7 8; do printf '.'; sleep 2; done
     echo
+}
+
+login_exists() {
+    maddy_ctl creds list | grep -qx "$1"
 }
 
 random_password() {
@@ -110,7 +125,10 @@ cmd_user() {
             [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "login must be lowercase [a-z0-9._-]" >&2; exit 1; }
             [[ ${#addrs[@]} -gt 0 ]] || addrs=("$name@$DOMAIN")
             [[ -n $password ]] || password=$(random_password)
-            printf '%s\n' "$password" | "${MADDY[@]}" creds create --bcrypt-cost 12 "$name"
+            if login_exists "$name"; then
+                echo "login $name already exists; use: ./jumail user passwd $name" >&2; exit 1
+            fi
+            printf '%s\n' "$password" | maddy_ctl creds create --bcrypt-cost 12 "$name"
             if [[ $touch_senders -eq 1 ]]; then
                 senders_set "$name" "$(IFS=,; echo "${addrs[*]}" | sed 's/,/, /g')"
                 wait_reload
@@ -124,17 +142,19 @@ cmd_user() {
             ;;
         passwd)
             local name=${1:?login}; local password; password=$(random_password)
-            printf '%s\n' "$password" | "${MADDY[@]}" creds password "$name"
+            login_exists "$name" || { echo "no login named $name" >&2; exit 1; }
+            printf '%s\n' "$password" | maddy_ctl creds password "$name"
             echo "new password for $name: $password"
             ;;
         rm)
             local name=${1:?login}
-            "${MADDY[@]}" creds remove -y "$name"
+            login_exists "$name" || { echo "no login named $name" >&2; exit 1; }
+            maddy_ctl creds remove -y "$name"
             senders_set "$name" ""
             echo "removed $name"
             ;;
         list)
-            echo "logins:"; "${MADDY[@]}" creds list
+            echo "logins:"; maddy_ctl creds list
             echo; echo "allowed senders ($SENDERS):"; grep -v '^#' "$SENDERS" || true
             ;;
         *) usage; exit 1 ;;
