@@ -40,7 +40,9 @@ services:
       - data:/data
       - ./config/maddy.conf:/etc/jumail/maddy.conf:ro
       - ./config/site-${JUMAIL_TLS:-acme}.conf:/etc/jumail/site.conf:ro
-      - ./config/senders:/etc/jumail/senders:ro
+      # A directory, not the file: the CLI rewrites senders and a single-file
+      # bind mount would keep showing the old copy.
+      - ./${JUMAIL_SENDERS_DIR:-config}:/etc/jumail/config:ro
       - ./certs:/etc/jumail/certs:ro
     networks:
       jumail:

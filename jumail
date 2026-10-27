@@ -15,7 +15,7 @@ DOMAIN=$(envget JUMAIL_DOMAIN juume.site)
 HOSTNAME_=$(envget JUMAIL_HOSTNAME "mail.$DOMAIN")
 SELECTOR=$(envget JUMAIL_DKIM_SELECTOR jumail)
 SPF_INCLUDE=$(envget RELAY_SPF_INCLUDE "")
-SENDERS=config/senders
+SENDERS=${JUMAIL_SENDERS_DIR:-$(envget JUMAIL_SENDERS_DIR config)}/senders
 
 usage() {
     cat <<USAGE
@@ -35,6 +35,22 @@ JuMail - send-only SMTP relay for the $DOMAIN apps
   ./jumail queue                     messages waiting for retry
   ./jumail test TO [FROM] [LOGIN]    send a test mail through the relay
 USAGE
+}
+
+# Rewrite the allow-list in place (same inode) so the running relay sees it.
+senders_set() { # senders_set LOGIN "addr, addr"   (empty = remove)
+    local tmp; tmp=$(mktemp)
+    grep -v "^$1:" "$SENDERS" > "$tmp" || true
+    [[ -n $2 ]] && printf '%s: %s\n' "$1" "$2" >> "$tmp"
+    cat "$tmp" > "$SENDERS"
+    rm -f "$tmp"
+}
+
+# maddy re-reads the allow-list when its mtime changes, checking every 15 s.
+wait_reload() {
+    printf 'waiting for the relay to reload the allow-list'
+    for _ in 1 2 3 4 5 6 7 8; do printf '.'; sleep 2; done
+    echo
 }
 
 random_password() {
@@ -96,15 +112,15 @@ cmd_user() {
             [[ -n $password ]] || password=$(random_password)
             printf '%s\n' "$password" | "${MADDY[@]}" creds create --bcrypt-cost 12 "$name"
             if [[ $touch_senders -eq 1 ]]; then
-                sed -i "/^$name:/d" "$SENDERS"
-                printf '%s: %s\n' "$name" "$(IFS=,; echo "${addrs[*]}" | sed 's/,/, /g')" >> "$SENDERS"
+                senders_set "$name" "$(IFS=,; echo "${addrs[*]}" | sed 's/,/, /g')"
+                wait_reload
             fi
             echo
             echo "login:    $name"
             echo "password: $password"
             echo "may send as: ${addrs[*]}"
             echo "SMTP_HOST=$HOSTNAME_ SMTP_PORT=587 (STARTTLS)"
-            echo "(shown once; the relay only stores a hash. Allow-list reloads within 15 s.)"
+            echo "(shown once; the relay only stores a hash)"
             ;;
         passwd)
             local name=${1:?login}; local password; password=$(random_password)
@@ -114,7 +130,7 @@ cmd_user() {
         rm)
             local name=${1:?login}
             "${MADDY[@]}" creds remove -y "$name"
-            sed -i "/^$name:/d" "$SENDERS"
+            senders_set "$name" ""
             echo "removed $name"
             ;;
         list)

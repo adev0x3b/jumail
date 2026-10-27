@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 15
     env:
       COMPOSE_FILE: compose.yml:ci/compose.ci.yml
+      JUMAIL_SENDERS_DIR: ci
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +27,8 @@ jobs:
         run: |
           ./jumail user add julinks --password julinks-ci-secret --no-senders
           ./jumail user add jupdf --password jupdf-ci-secret --no-senders
+          # through the CLI's allow-list write, while the relay is running
+          ./jumail user add judesk --password judesk-ci-secret judesk@juume.site
           ./jumail user list
 
       - name: Smoke test

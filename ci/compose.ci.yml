@@ -8,7 +8,6 @@ services:
       JUMAIL_RATE_PERIOD: "1m"
     volumes:
       - ./ci/site-ci.conf:/etc/jumail/site.conf:ro
-      - ./ci/senders:/etc/jumail/senders:ro
       - ./ci/certs/ca.pem:/etc/jumail/ci/ca.pem:ro
     depends_on:
       mailpit:
