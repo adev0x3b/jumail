@@ -29,7 +29,8 @@ queue on your own host and uses a provider only for the final hop.
 - One bcrypt-hashed login per app, stored in an SQLite table in the data volume.
 - Per-login allow-list of From addresses (`config/senders`), checked on both
   the envelope and the header. Senders outside the domain are rejected.
-- DKIM signing with a 2048-bit RSA key generated on first start.
+- DKIM signing with a 2048-bit RSA key generated on first start, for
+  providers that relay the message unchanged.
 - Global rate limit; excess is deferred with 451, not dropped.
 - On-disk queue with exponential retry when the provider is unreachable.
 - TLS certificate from Let's Encrypt (DNS-01 via Cloudflare) or from files.
@@ -212,6 +213,9 @@ on every push.
 - Rate limits are global, not per login (maddy scopes limits by IP, sender
   domain or destination, and all logins share one domain).
 - The provider sees message contents.
+- Resend strips the relay's DKIM signature and Message-ID and signs with its
+  own `resend._domainkey` key. Mail still passes DMARC through that signature;
+  the relay's own key only matters with providers that keep it.
 - No inbound mail, no bounces, no DMARC reports.
 
 ## Layout
