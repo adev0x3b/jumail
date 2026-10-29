@@ -4,3 +4,6 @@ certs/*
 ci/certs/
 *.key
 *.pem
+
+# Real logins of this deployment, created by ./jumail
+config/senders

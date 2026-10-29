@@ -190,10 +190,11 @@ point of view:
 
 ```bash
 ./ci/gen-certs.sh
-export COMPOSE_FILE=compose.yml:ci/compose.ci.yml
+export COMPOSE_FILE=compose.yml:ci/compose.ci.yml JUMAIL_SENDERS_DIR=ci
 docker compose up -d --wait jumail mailpit
 ./jumail user add julinks --password julinks-ci-secret --no-senders
 ./jumail user add jupdf --password jupdf-ci-secret --no-senders
+./jumail user add judesk --password judesk-ci-secret judesk@juume.site
 docker compose run --rm smoke
 docker compose down -v
 ```
@@ -203,7 +204,8 @@ password refused, From outside the allow-list refused, foreign sender domain
 refused, spoofed header From refused, authenticated send accepted, message
 relayed upstream over STARTTLS with AUTH, DKIM signature present with the
 expected domain and selector, From preserved, one login cannot use another's
-address, rate limit defers with 451. The GitHub Actions workflow runs the same
+address, an allow-list entry added while the relay runs is honoured, rate
+limit defers with 451. The GitHub Actions workflow runs the same
 on every push.
 
 ![Relayed message with its DKIM signature, as received by Mailpit](docs/mailpit-headers.png)
@@ -225,11 +227,16 @@ compose.yml                  relay service, network "jumail", data volume
 config/maddy.conf            listener, authentication, sender policy, DKIM, queue
 config/site-acme.conf        TLS via Let's Encrypt + upstream relay
 config/site-selfsigned.conf  TLS from files + upstream relay
-config/senders               login -> allowed From addresses
+config/senders               login -> allowed From addresses (created by ./jumail, not tracked)
 jumail                       operator CLI
 ci/                          Mailpit stand-in, smoke test, compose override, cert generator
 .github/workflows/ci.yml     runs the smoke test
 ```
+
+## Security
+
+Report vulnerabilities privately through GitHub's *Report a vulnerability*
+button on this repository, not in a public issue.
 
 ## License
 
