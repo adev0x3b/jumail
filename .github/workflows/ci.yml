@@ -5,17 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
-    # Hosted minutes are used up until November 2026; "zed" is the self-hosted
-    # runner on the desktop. Switch to ubuntu-latest when going public.
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       COMPOSE_FILE: compose.yml:ci/compose.ci.yml
       JUMAIL_SENDERS_DIR: ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Generate throwaway certificates for the fake upstream
         run: ./ci/gen-certs.sh

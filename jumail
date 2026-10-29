@@ -50,6 +50,7 @@ USAGE
 
 # Rewrite the allow-list in place (same inode) so the running relay sees it.
 senders_set() { # senders_set LOGIN "addr, addr"   (empty = remove)
+    ensure_senders
     local tmp; tmp=$(mktemp)
     grep -v "^$1:" "$SENDERS" > "$tmp" || true
     [[ -n $2 ]] && printf '%s: %s\n' "$1" "$2" >> "$tmp"
@@ -76,15 +77,24 @@ need_env() {
     [[ -f .env ]] || { echo "no .env yet, run ./jumail init first" >&2; exit 1; }
 }
 
+# The allow-list is deployment data, not part of the repo: create it on demand.
+ensure_senders() {
+    [[ -f $SENDERS ]] && return
+    mkdir -p "$(dirname "$SENDERS")"
+    printf '%s\n' "# login: allowed From addresses (comma separated). Managed by ./jumail user add." \
+        "# A bare domain allows every address in that domain." > "$SENDERS"
+}
+
 cmd_init() {
     if [[ -f .env ]]; then
         echo ".env already exists, leaving it alone"
     else
         cp .env.example .env
         chmod 600 .env
-        echo "created .env - fill in RELAY_USER, RELAY_PASSWORD, ACME_EMAIL, CLOUDFLARE_API_TOKEN"
+        echo "created .env - fill in RELAY_PASSWORD, ACME_EMAIL, CLOUDFLARE_API_TOKEN"
     fi
     mkdir -p certs
+    ensure_senders
     echo "next: ./jumail up && ./jumail dns"
 }
 
@@ -216,7 +226,7 @@ PY
 case "${1:-}" in
     init) cmd_init ;;
     certs) cmd_certs ;;
-    up) need_env; docker compose up -d --wait ;;
+    up) need_env; ensure_senders; docker compose up -d --wait ;;
     down) docker compose down ;;
     status) docker compose ps ;;
     logs) shift; docker compose logs -f --tail "${1:-100}" jumail ;;
