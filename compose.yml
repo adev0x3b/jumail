@@ -3,7 +3,7 @@ name: jumail
 services:
   # One-shot: make the data volume writable by the unprivileged maddy user.
   init:
-    image: alpine:3.22
+    image: alpine:3.24
     command: ["sh", "-c", "chown 1000:1000 /data && chmod 700 /data"]
     volumes:
       - data:/data
